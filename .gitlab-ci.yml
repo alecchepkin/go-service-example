@@ -1,0 +1,93 @@
+variables:
+
+    CODE_IMAGE: $CI_REGISTRY_IMAGE/$CI_PROJECT_NAME:$CI_COMMIT_SHA
+    PRODUCTION_POSTGRESQL_HOST: 'tracker-db.domain.com'
+    PRODUCTION_POSTGRESQL_PORT: '5432'
+    PRODUCTION_POSTGRESQL_USER: 'tracker'
+    PRODUCTION_POSTGRESQL_DATABASE: 'tracker'
+    PRODUCTION_CLICKHOUSE_HOST: 'tracker-clickhouse.domain.com'
+    PRODUCTION_CLICKHOUSE_PORT: '9900'
+    PRODUCTION_CLICKHOUSE_USER: 'default'
+    PRODUCTION_DEBUG_REPLACE: 'false'
+    PRODUCTION_CRONTAB_SCHEDULE: '0 3,13,20 * * *'
+
+.common_deploy: &common_deploy
+  stage: deploy
+  dependencies:
+    - build
+  tags:
+    - deploy
+  image: gitlab.domain.com:4567/images/docker:latest
+  services:
+    - docker:dind
+  script:
+    - if [ ${CI_ENVIRONMENT_SLUG} = 'production' ] ; then ENV_REPL='PRODUCTION_'; fi
+    - for variable_name in
+        POSTGRESQL_HOST POSTGRESQL_PORT POSTGRESQL_USER POSTGRESQL_PASSWORD POSTGRESQL_DATABASE CLICKHOUSE_HOST
+        CLICKHOUSE_PORT CLICKHOUSE_USER CLICKHOUSE_PASSWORD DEBUG_REPLACE CRONTAB_SCHEDULE
+        ; do
+          environment_variable_name=${ENV_REPL}${variable_name};
+          sed -i "s~${variable_name}~${!environment_variable_name}~g" deploy-service.yaml;
+      done
+    - echo "$KUBERNETES113_CONFIG" > config
+    - sed -i "s/FULL_APP_NAME/${CI_PROJECT_PATH_SLUG}/g" namespace.yaml
+    - sed -i "s/BRANCH_ENVIRONMENT/${CI_ENVIRONMENT_SLUG}/g" namespace.yaml
+    - sed -i "s/COMMIT_SHA/${CI_COMMIT_SHA}/g" deploy-service.yaml
+    - sed -i "s/FULL_APP_NAME/${CI_PROJECT_PATH_SLUG}/g" deploy-service.yaml
+    - sed -i "s/BRANCH_ENVIRONMENT/${CI_ENVIRONMENT_SLUG}/g" deploy-service.yaml
+    - sed -i "s~GITLAB_DOCKER_REGISTRY_IMAGE~${CI_REGISTRY_IMAGE}~g" deploy-service.yaml
+    - sed -i "s/SHORT_APP_NAME/${CI_PROJECT_NAME}/g" deploy-service.yaml
+    - docker run -v ${PWD}/config:/root/.kube/config -v ${PWD}/namespace.yaml:/namespace.yaml lachlanevenson/k8s-kubectl:v1.13.2 apply -f /namespace.yaml
+    - docker run -v ${PWD}/config:/root/.kube/config lachlanevenson/k8s-kubectl:v1.13.2 -n $CI_PROJECT_PATH_SLUG-$CI_ENVIRONMENT_SLUG create secret docker-registry regcred --docker-server=$CI_REGISTRY --docker-username=$CI_REGISTRY_USER --docker-password=$CI_REGISTRY_PASSWORD --docker-email=$GITLAB_USER_EMAIL || true
+    - docker run -v ${PWD}/config:/root/.kube/config -v ${PWD}/deploy-service.yaml:/deploy-service.yaml lachlanevenson/k8s-kubectl:v1.13.2 apply -f /deploy-service.yaml
+    - echo "${CI_PROJECT_NAME} Deployed"
+
+stages:
+  - go
+  - build
+  - deploy
+
+go:
+  stage: go
+  image: gitlab.domain.com:4567/images/debian-go:v1.0.0
+  tags:
+    - build
+  only:
+  - production
+
+  artifacts:
+    paths:
+    - ${CI_PROJECT_NAME}
+
+  script:
+    - export PATH=$PATH:/usr/local/go/bin; export GOPATH=/root/go; export PATH=$GOPATH/bin:$PATH; export GOBIN=$GOPATH/bin; export GOROOT=/usr/local/go
+    - mkdir -p /root/go/src/${CI_PROJECT_NAME}
+    - cp -r ./* /root/go/src/${CI_PROJECT_NAME}/
+    - ls -la /root/go/src/${CI_PROJECT_NAME}
+    - go get
+    - go build -o ${CI_PROJECT_NAME} .
+
+build:
+  stage: build
+  dependencies:
+    - go
+  image: docker:latest
+  tags:
+    - build
+  services:
+    - docker:dind
+  only:
+  - production
+
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+    - docker build --tag="$CODE_IMAGE" .
+    - docker push $CODE_IMAGE
+
+deploy-service-prod:
+  <<: *common_deploy
+  environment:
+    name: production
+  when: manual
+  only:
+  - production

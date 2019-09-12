@@ -1,0 +1,33 @@
+---
+
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: FULL_APP_NAME-cronjob
+  namespace: FULL_APP_NAME-BRANCH_ENVIRONMENT
+spec:
+  schedule: "CRONTAB_SCHEDULE"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: SHORT_APP_NAME
+                    operator: In
+                    values:
+                    - "true"
+          containers:
+          - name: FULL_APP_NAME
+            image: GITLAB_DOCKER_REGISTRY_IMAGE/SHORT_APP_NAME:COMMIT_SHA
+            env:
+            - name: POSTGRES_DSN
+              value: "host=POSTGRESQL_HOST port=POSTGRESQL_PORT user=POSTGRESQL_USER password=POSTGRESQL_PASSWORD dbname=POSTGRESQL_DATABASE sslmode=disable"
+            - name: CLICKHOUSE_DSN
+              value: "tcp://CLICKHOUSE_HOST:CLICKHOUSE_PORT?username=CLICKHOUSE_USER&password=CLICKHOUSE_PASSWORD&debug=DEBUG_REPLACE"
+          imagePullSecrets:
+          - name: regcred
+          restartPolicy: OnFailure
